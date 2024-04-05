@@ -1,38 +1,33 @@
 import dash
-from dash import dcc, html, ctx
-from dash.dependencies import Input, Output, State
+from dash import dcc, html, Input, Output, ctx, State
+import plotly.graph_objs as go
 import pandas as pd
-import plotly.graph_objects as go
-import itertools
-import numpy as np 
-import base64
 import io
-from plotly.subplots import make_subplots
+import base64
 import pyarrow.parquet as pq
 import pyarrow.compute as pc
-import json
-
-
-with open('config.json', 'r') as f:
-  data = json.load(f)
-  CNV_link = data['copy_number_file_path']
-  GP_link = data['gpfit_file_path']
-#CNV_link = "/projects/steiflab/scratch/glchang/abacus_visualization/test/A95621B.copy_number.parquet"
-#GP_link = "/projects/steiflab/scratch/glchang/abacus_visualization/test/A95621B.gp_fit.parquet"
+from plotly.subplots import make_subplots
+import itertools
+from io import StringIO
+import numpy as np
+from pyarrow.lib import ArrowInvalid
 
 
 external_stylesheets = ['https://codepen.io/chriddyp/pen/bWLwgP.css'] # just styling
 
+# Initialize Dash app
 app = dash.Dash(__name__, external_stylesheets=external_stylesheets) # app
 
+
+# Constants
 app.title = "Abacus Visualizer"
-
-chromosomes_names = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '11', '12', '13', '14', '15', '16', '17', '18', '19', '20', '21', '22', 'X', 'Y']
-chromosome_sizes = [249250621, 243199373, 198022430, 191154276, 180915260, 171115067, 159138663, 146364022, 141213431, 135534747, 135006516, 133851895, 115169878, 107349540, 102531392, 90354753, 81195210, 78077248, 59128983, 63025520, 48129895, 51304566, 155270560, 59373566]
-
-
-# Calculate cumulative sizes
-cumulative_sizes = [0] + list(itertools.accumulate(chromosome_sizes)) 
+genome = "hg19"
+if genome == "hg38" or genome is None:
+    chromosomes_names = ['chr1', 'chr2', 'chr3', 'chr4', 'chr5', 'chr6', 'chr7', 'chr8', 'chr9', 'chr10', 'chr11', 'chr12', 'chr13', 'chr14', 'chr15', 'chr16', 'chr17', 'chr18', 'chr19', 'chr20', 'chr21', 'chr22', 'chrX', 'chrY']
+    chromosome_sizes = [248956422, 242193529, 198295559, 190214555, 181538259, 170805979, 159345973, 145138636, 138394717, 133797422, 135086622, 133275309, 114364328, 107043718, 101991189, 90338345, 83257441, 80373285, 58617616, 64444167, 46709983, 50818468, 156040895, 57227415]
+elif genome == "hg19":
+    chromosomes_names = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '11', '12', '13', '14', '15', '16', '17', '18', '19', '20', '21', '22', 'X', 'Y']
+    chromosome_sizes = [249250621, 243199373, 198022430, 191154276, 180915260, 171115067, 159138663, 146364022, 141213431, 135534747, 135006516, 133851895, 115169878, 107349540, 102531392, 90354753, 81195210, 78077248, 59128983, 63025520, 48129895, 51304566, 155270560, 59373566]	
 
 
 def discrete_colorscale(bvals, colors):
@@ -51,208 +46,288 @@ def discrete_colorscale(bvals, colors):
         dcolorscale.extend([[nvals[k], colors[k]], [nvals[k+1], colors[k]]])
     return dcolorscale    
 
-def parquetFilter(inequality, parquet, column, value):
-    if inequality == "=":
-        return pc.equal(parquet[column], value)
-    elif inequality == ">":
-        return pc.greater(parquet[column], value)
-    elif inequality == "<":
-        return pc.less(parquet[column], value)
-
-
-table = pq.read_table(CNV_link)
-table = table.sort_by([("cell_id", "ascending")])
-df = table.to_pandas()
-
-gpfit_table = pq.read_table(GP_link)
-gpfit_table = gpfit_table.sort_by([("cell_id", "ascending")])
-
-heatmap_df = df
-heatmap_df['x_mapping'] = [start + cumulative_sizes[chromosomes_names.index(chrom)] for start, chrom in zip(df['start'], df['chrom'])]
+def get_x_mapping(df, cumulative_sizes, chromosomes_names):
+    df['x_mapping'] = [start + cumulative_sizes[chromosomes_names.index(chrom)] for start, chrom in zip(df['start'], df['chrom'])]
+    return df
 
 bvals = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
 color_schemes = ['#3498db', '#85c1e9', '#d3d3d3', '#fee2d5', '#fcc3ac', '#fc9f81', '#fb7c5c', '#f5543c', '#e32f27', '#c1151b', '#9d0d14', '#780428', '#530031', '#40092e', '#2d112b']
 colorscale = discrete_colorscale(bvals, color_schemes)
 
-bvals = np.array(bvals)
-tickvals = [str(i) for i in range(15)] #position with respect to bvals where ticktext is displayed
-ticktext = [f'<{bvals[1]}'] + [f'{bvals[k]}-{bvals[k+1]}' for k in range(1, len(bvals)-2)]+[f'>{bvals[-2]}']
+# Calculate cumulative sizes
+cumulative_sizes = [0] + list(itertools.accumulate(chromosome_sizes)) 
 
 
-heatmap_fig = go.Figure(data=go.Heatmap(
-    z=df['copy_number'],
-    x=heatmap_df['x_mapping'],
-    y=df['cell_id'],
-    colorscale=colorscale,
-    zmin=0,  # Set the minimum value for the colorbar scale
-    zmax=14,  # Set the maximum value for the colorbar scale
-    colorbar=dict(title="Copy Number"),
-))
-heatmap_fig.update_yaxes(title_text="Cell ID")
-
-heatmap_fig.update_layout(
-    title='Heatmap',
-    xaxis=dict(
-        title='Chromosome',
-        tickvals=cumulative_sizes,
-        ticktext=chromosomes_names + [''],
-        tickmode='array',
-        ticklabelmode='period',
-        ticklabelposition='outside',
-        tickformat='d',
-        range=[0, cumulative_sizes[-1] + chromosome_sizes[-1]], 
-    )
-)
-
-x_options = df.columns
-y_options = df.columns
-z_options = df.columns
-cell_id_options = df['cell_id'].unique().tolist()
-
-# Create the Dash layout
+# Define app layout
 app.layout = html.Div([
     html.H1("Abacus Visualizer", style={"background-color": "#fb7c5c", "color": "white", "padding": "13px"}),
-    
-    dcc.Loading(
-        id="loading-component",
-        type="circle",  # You can also use "circle" or "dot"
-        children=[dcc.Graph(
-        id='heatmap',
-        figure=heatmap_fig,
-        style={'overflow': 'scroll', 'height': '900px'}
-    )]),
-    html.Div(id='info-block', children=[], style={'width': '97%', 'text-align': 'right', 'font-size': '15px'}),
-    html.Div([
-        html.Div([
-            html.Label(['Metadata:'], style={'font-weight': 'bold', "text-align": "left"}),
-            dcc.Upload(
-                id='upload-metadata',
-                children=html.Button('Upload CSV File')
-            ),
-            html.Div(id='output-message'),
-            html.Div(id='intermediate-data', style={'display': 'none'}),
-        ], style={'width': '13%', 'display': 'inline-block', 'vertical-align': 'top'}),
-        html.Div([
-            html.Label(['Parameter:'], style={'font-weight': 'bold', "text-align": "left"}),
-            dcc.Dropdown(
-                id='column-dropdown',
-                options=[{'label': x, 'value': x} for x in x_options],
-                value=None,
-                placeholder='Select a value'
-            ),
-        ], style={'width': '13%', 'display': 'inline-block', 'vertical-align': 'top'}),
-        html.Div([
-            html.Label(['filter by:'], style={'font-weight': 'bold', "text-align": "left"}),
-            dcc.Dropdown(
-                id='fil-cond-dropdown-metadata',
-                options=[
-                    {'label': '>', 'value': '>'},
-                    {'label': '=', 'value': '='},
-                    {'label': '<', 'value': '<'}
-                ],
-                style={'width': '100%'},
-            ),
-        ], style={'width': '13%', 'display': 'inline-block', 'vertical-align': 'top'}),
-        html.Div([
-            html.Label(['filter by:'], style={'font-weight': 'bold', "text-align": "left"}),
-            dcc.Dropdown(
-                id='value-dropdown',
-                options=[],
-                value=None,
-                placeholder='Select a value'
-            ),
-        ], style={'width': '13%', 'display': 'inline-block', 'vertical-align': 'top'}),
+    html.Div(id='upload-cnv', children=[
+        html.H3("Upload Copy Number Parquet file", style={'text-align': 'center'}),
+        html.H3("Takes ~1min to load after upload", style={'text-align': 'center', 'font-size': '20px'}),
+        html.H3(id = "cnv-error", style={'text-align': 'center', 'font-size': '16px', 'color': 'red'}),
+        dcc.Upload(
+            id='upload-copy-number',
+            children=html.Div([
+                'Drag and Drop or ',
+                html.A('Select Files')
+            ]),
+            style={
+                'width': '100%',
+                'height': '60px',
+                'lineHeight': '60px',
+                'borderWidth': '1px',
+                'borderStyle': 'dashed',
+                'borderRadius': '5px',
+                'textAlign': 'center',
+                'margin': '10px'
+            },
+            multiple=False
+        )
     ]),
+    dcc.Store(id='x-options'),
+    html.Div(id='gp-fit-inputs', children=[
+        html.H3("Upload GP Fit Parquet file", style={'text-align': 'center'}),
+        html.H3(id = "gpFit-error", style={'text-align': 'center', 'font-size': '16px', 'color': 'red'}),
+        dcc.Upload(
+            id='gp-fit-upload',
+            children=html.Div([
+                'Drag and Drop or ',
+                html.A('Select Files')
+            ]),
+            style={
+                'width': '100%',
+                'height': '60px',
+                'lineHeight': '60px',
+                'borderWidth': '1px',
+                'borderStyle': 'dashed',
+                'borderRadius': '5px',
+                'textAlign': 'center',
+                'margin': '10px'
+            },
+            multiple=False
+        ),
+    ]),
+    dcc.Store(id='gpfit-data'),
+    html.Div(id = "web-app", style={'display':'none'}, children=[
+        dcc.Graph(
+            id='heatmap',
+            style={'overflow': 'scroll', 'height': '900px'}
+        ),
+        html.Div(id='info-block', children=[], style={'width': '97%', 'text-align': 'right', 'font-size': '15px'}),
+        html.Div([
+            html.Div([
+                html.Label(['Metadata:'], style={'font-weight': 'bold', "text-align": "left"}),
+                dcc.Upload(
+                    id='upload-metadata',
+                    children=html.Button('Upload CSV File')
+                ),
+                html.Div(id='output-message'),
+                html.Div(id='intermediate-data', style={'display': 'none'}),
+            ], style={'width': '13%', 'display': 'inline-block', 'vertical-align': 'top'}),
+            html.Div([
+                html.Label(['Parameter:'], style={'font-weight': 'bold', "text-align": "left"}),
+                dcc.Dropdown(
+                    id='column-dropdown',
+                    options={},#[{'label': x, 'value': x} for x in x_options],
+                    value=None,
+                    placeholder='Select a value'
+                ),
+            ], style={'width': '13%', 'display': 'inline-block', 'vertical-align': 'top'}),
+            html.Div([
+                html.Label(['filter by:'], style={'font-weight': 'bold', "text-align": "left"}),
+                dcc.Dropdown(
+                    id='fil-cond-dropdown-metadata',
+                    options=[
+                        {'label': '>', 'value': '>'},
+                        {'label': '=', 'value': '='},
+                        {'label': '<', 'value': '<'}
+                    ],
+                    style={'width': '100%'},
+                ),
+            ], style={'width': '13%', 'display': 'inline-block', 'vertical-align': 'top'}),
+            html.Div([
+                html.Label(['filter by:'], style={'font-weight': 'bold', "text-align": "left"}),
+                dcc.Dropdown(
+                    id='value-dropdown',
+                    options=[],
+                    value=None,
+                    placeholder='Select a value'
+                ),
+            ], style={'width': '13%', 'display': 'inline-block', 'vertical-align': 'top'}),
+        ]),
 
-    
-    html.Div([
+        
         html.Div([
-            html.Button('reset', id='reset-button', n_clicks=0),
-            html.Button('apply', id='apply-button', n_clicks=0),
-        ], style={'width': '13%', 'display': 'inline-block', 'vertical-align': 'top'}),
+            html.Div([
+                html.Button('reset', id='reset-button', n_clicks=0),
+                html.Button('apply', id='apply-button', n_clicks=0),
+            ], style={'width': '13%', 'display': 'inline-block', 'vertical-align': 'top'}),
+            html.Div([
+                html.Label(['Parameter:'], style={'font-weight': 'bold', "text-align": "left"}),
+                dcc.Dropdown(
+                    id='column-dropdown-sort',
+                    options={},#[{'label': x, 'value': x} for x in x_options],
+                    value=None,
+                    placeholder='Select a value'
+                ),
+            ], style={'width': '13%', 'display': 'inline-block', 'vertical-align': 'top'}),
+            html.Div([
+                html.Label(['sort by:'], style={'font-weight': 'bold', "text-align": "left"}),
+                dcc.Dropdown(
+                    id='sort-cond-dropdown-metadata',
+                    options=[
+                        {'label': 'accending', 'value': True},
+                        {'label': 'decending', 'value': False}
+                    ],
+                    style={'width': '100%'},
+                ),
+            ], style={'width': '13%', 'display': 'inline-block', 'vertical-align': 'top'})
+        ]),
         html.Div([
-            html.Label(['Parameter:'], style={'font-weight': 'bold', "text-align": "left"}),
-            dcc.Dropdown(
-                id='column-dropdown-sort',
-                options=[{'label': x, 'value': x} for x in x_options],
-                value=None,
-                placeholder='Select a value'
-            ),
-        ], style={'width': '13%', 'display': 'inline-block', 'vertical-align': 'top'}),
+            dcc.Graph(id='scatter', style={'width': '60%'}),
+            dcc.Graph(id='multiplicity', style={'width': '40%'})
+        ], style={'display': 'flex', 'width': '100%'}),
         html.Div([
-            html.Label(['sort by:'], style={'font-weight': 'bold', "text-align": "left"}),
-            dcc.Dropdown(
-                id='sort-cond-dropdown-metadata',
-                options=[
-                    {'label': 'accending', 'value': True},
-                    {'label': 'decending', 'value': False}
-                ],
-                style={'width': '100%'},
-            ),
-        ], style={'width': '13%', 'display': 'inline-block', 'vertical-align': 'top'})
-    ]),
-    html.Div([
-        dcc.Graph(id='scatter', style={'width': '60%'}),
-        dcc.Graph(id='multiplicity', style={'width': '40%'})
-    ], style={'display': 'flex', 'width': '100%'}),
-    html.Div([
-        html.Div([
-            html.Label(['Cell ID:'], style={'font-weight': 'bold', "text-align": "left"}),
-            dcc.Dropdown(
-                id='cell-id-dropdown',
-                options=[{'label': cell_id, 'value': cell_id} for cell_id in cell_id_options],
-                style={'width': '100%'}
-            ),
-        ], style={'width': '13%', 'display': 'inline-block', 'vertical-align': 'top'}),
-        html.Div([
-            html.Label(['Parameter:'], style={'font-weight': 'bold', "text-align": "left"}),
-            dcc.Dropdown(
-                id='x-axis-dropdown-scatter',
-                options=[{'label': x, 'value': x} for x in x_options],
-                style={'width': '100%'},
-            ),
-        ], style={'width': '13%', 'display': 'inline-block', 'vertical-align': 'top'}),
-        html.Div([
-            html.Label(['filter by:'], style={'font-weight': 'bold', "text-align": "left"}),
-            dcc.Dropdown(
-                id='fil-cond-dropdown-scatter',
-                options=[
-                    {'label': '>', 'value': '>'},
-                    {'label': '=', 'value': '='},
-                    {'label': '<', 'value': '<'}
-                ],
-                style={'width': '100%'},
-            ),
-        ], style={'width': '3%', 'display': 'inline-block', 'vertical-align': 'top'}),
-        html.Div([
-            html.Label(['value:'], style={'font-weight': 'bold', "text-align": "left"}),
-            dcc.Input(id='input-val-scatter', type='number', min=0, value=0)
-        ], style={'width': '10%', 'display': 'inline-block', 'vertical-align': 'top'}),  
-    ]),
-    html.Div([     
-        html.Button('apply', id='apply-button-scatter', n_clicks=0, style={'width': '105px'}),
-    ], style={'margin-top': '10px', 'display': 'flex', 'flex-direction': 'row', 'align-items': 'center'})
+            html.Div([
+                html.Label(['Cell ID:'], style={'font-weight': 'bold', "text-align": "left"}),
+                dcc.Dropdown(
+                    id='cell-id-dropdown',
+                    options={},#[{'label': cell_id, 'value': cell_id} for cell_id in cell_id_options],
+                    style={'width': '100%'}
+                ),
+            ], style={'width': '13%', 'display': 'inline-block', 'vertical-align': 'top'}),
+            html.Div([
+                html.Label(['Parameter:'], style={'font-weight': 'bold', "text-align": "left"}),
+                dcc.Dropdown(
+                    id='x-axis-dropdown-scatter',
+                    options={},#[{'label': x, 'value': x} for x in x_options],
+                    style={'width': '100%'},
+                ),
+            ], style={'width': '13%', 'display': 'inline-block', 'vertical-align': 'top'}),
+            html.Div([
+                html.Label(['filter by:'], style={'font-weight': 'bold', "text-align": "left"}),
+                dcc.Dropdown(
+                    id='fil-cond-dropdown-scatter',
+                    options=[
+                        {'label': '>', 'value': '>'},
+                        {'label': '=', 'value': '='},
+                        {'label': '<', 'value': '<'}
+                    ],
+                    style={'width': '100%'},
+                ),
+            ], style={'width': '3%', 'display': 'inline-block', 'vertical-align': 'top'}),
+            html.Div([
+                html.Label(['filter by:'], style={'font-weight': 'bold', "text-align": "left"}),
+                dcc.Dropdown(
+                    id='input-val-scatter',
+                    options=[],
+                    value=None,
+                    placeholder='Select a value'
+                ),
+            ], style={'width': '13%', 'display': 'inline-block', 'vertical-align': 'top'}), 
+        ]),
+        html.Div([     
+            html.Button('apply', id='apply-button-scatter', n_clicks=0, style={'width': '105px'}),
+        ], style={'margin-top': '10px', 'display': 'flex', 'flex-direction': 'row', 'align-items': 'center'})
+    ])
 ], style={'display': 'flex', 'flex-direction': 'column', 'width': '100%'})
 
-def get_coverage_order(df_group):
-    '''Get the order of magnitude of the coverage depth for the panel.'''
-    group_order = 1
+global_copy_number = None
+global_heatmap = None
+global_gpFit = None
 
-    if len(df_group) > 0:
-        if df_group['2'].max() > 0:
-            group_order = int(np.log10(df_group['2'].max()))
+def generateHeatmap(df, cumulative_sizes, chromosomes_names):
+    df = get_x_mapping(df, cumulative_sizes, chromosomes_names)
+    print('displaying on heatmap')
+    heatmap_fig = go.Figure(data=go.Heatmap(
+        z=df['copy_number'],
+        x=df['x_mapping'],
+        y=df['cell_id'],
+        colorscale=colorscale,
+        zmin=0,  # Set the minimum value for the colorbar scale
+        zmax=14,  # Set the maximum value for the colorbar scale
+        colorbar=dict(title="Copy Number"),
+    ))
+    heatmap_fig.update_yaxes(title_text="Cell ID")
 
-    return group_order 
+    heatmap_fig.update_layout(
+        title='Heatmap',
+        xaxis=dict(
+            title='Chromosome',
+            tickvals=cumulative_sizes,
+            ticktext=chromosomes_names + [''],
+            tickmode='array',
+            ticklabelmode='period',
+            ticklabelposition='outside',
+            tickformat='d',
+            range=[0, cumulative_sizes[-1] + chromosome_sizes[-1]], 
+        )
+    )
+    return heatmap_fig
 
+@app.callback([Output('heatmap', 'figure'),
+               Output('cell-id-dropdown', 'options'),
+               Output('x-options', 'data'), 
+               Output('cnv-error', 'children'), 
+               Output('upload-cnv', 'style'), 
+               Output('web-app', 'style')],
+              [Input('upload-copy-number', 'contents'),
+               Input('upload-copy-number', 'filename')])
+def upload_output(contents, filename):
+    global global_copy_number
+    global global_heatmap
+
+    if contents is not None:
+        # Parse uploaded data
+        content_type, content_string = contents.split(',')
+        decoded = base64.b64decode(content_string)
+        
+        # Read Parquet file
+        try:
+            parquet_file = io.BytesIO(decoded)
+            table = pq.read_table(parquet_file)
+        except ArrowInvalid as e:
+            errorMessage = filename + " is not parquet file"
+            return go.Figure(), {}, [], errorMessage, {'display': 'block'}, {'display': 'none'}, {'display': 'none'}
+        global_copy_number = table
+
+        heatmap_df = table.to_pandas()
+        x_options = heatmap_df.columns
+
+        required_cols = ['copy_number', 'cell_id', 'start', 'chrom', 'modal_corrected', 'assignment']
+        for col in required_cols:
+            if col not in x_options:
+                errorMessage = col + " column is not in datatable"
+                return go.Figure(), {}, [], errorMessage, {'display': 'block'}, {'display': 'none'}, {'display': 'none'}
+
+        heatmap_fig = generateHeatmap(heatmap_df, cumulative_sizes, chromosomes_names)
+        global_heatmap = heatmap_fig
+        print('done heatmap')
+        cell_ids = heatmap_df['cell_id'].unique().tolist()
+        cell_options = [{'label': cell_id, 'value': cell_id} for cell_id in cell_ids]
+
+        return heatmap_fig, cell_options, x_options, "", {'display': 'none'}, {'display': 'block'}
+    return go.Figure(), {}, [], "", {'display': 'block'}, {'display': 'none'}
+
+@app.callback([Output('column-dropdown', 'options'), 
+               Output('column-dropdown-sort', 'options'), 
+               Output('x-axis-dropdown-scatter', 'options')],
+               Input('x-options', 'data'),
+               prevent_initial_call=True)
+def update_value_dropdown(selected_column):
+    if selected_column:
+        return selected_column, selected_column, selected_column
+    else:
+        return {}, {}, {}
+    
 @app.callback(
-    Output('intermediate-data', 'children'),
-    Output('column-dropdown', 'options'),
-    Output('column-dropdown-sort', 'options'),
+    [Output('intermediate-data', 'children'),
+    Output('x-options', 'data', allow_duplicate=True)],
     Input('upload-metadata', 'contents'),
-    State('upload-metadata', 'filename'),
+    State('x-options', 'data'),
     prevent_initial_call=True
 )
-def update_dropdown(contents, filename):
+def update_dropdown(contents, x_options):
     if contents is None:
         raise dash.exceptions.PreventUpdate
 
@@ -262,10 +337,113 @@ def update_dropdown(contents, filename):
     df_meta = pd.read_csv(io.StringIO(decoded.decode('utf-8')))
 
     # Update options for column-dropdown based on DataFrame columns
-    column_options = [{'label': col, 'value': col} for col in (df_meta.columns.union(x_options))]
-    return df_meta.to_json(date_format='iso', orient='split'), column_options, column_options
+    column_options = df_meta.columns.union(x_options)
+    return df_meta.to_json(date_format='iso', orient='split'), column_options
 
-# what is this function even doing ?? need to figure this out before moving forward with metadata filtering
+@app.callback(
+    Output('info-block', 'children'),
+    [Input('heatmap', 'clickData')]
+)
+def update_info_block(clickData):
+    if clickData is not None:
+        point_data = clickData['points'][0]
+        chromosome = get_chrom_from_x_val(point_data['x'], chromosomes_names, cumulative_sizes)
+        cell_id = point_data['y']
+        copy_number = point_data['z']
+
+        # Construct the text content for the info block
+        text_content = f'''
+            **Chromosome:** {chromosome} \t
+            **Cell ID:** {cell_id} \t
+            **Copy Number:** {copy_number}
+        '''
+        return dcc.Markdown(text_content)
+    else:
+        return ""
+
+
+
+def get_chrom_from_x_val(val, chrName, chrCumulativeSize):
+    for i in range(len(chrCumulativeSize)):
+        if val < chrCumulativeSize[i]:
+            return chrName[i-1]
+    raise ValueError
+
+def parquetFilter(inequality, parquet, column, value):
+    if inequality == "=":
+        return pc.equal(parquet[column], value)
+    elif inequality == ">":
+        return pc.greater(parquet[column], value)
+    elif inequality == "<":
+        return pc.less(parquet[column], value)
+    
+# Define the callback to show the scatter plot on hover
+@app.callback(
+    [Output('scatter', 'figure'),
+    Output('apply-button-scatter', 'n_clicks')],
+    [Input('heatmap', 'clickData'),
+    Input('apply-button-scatter', 'n_clicks')],
+    [State('cell-id-dropdown', 'value'),
+     State('x-axis-dropdown-scatter', 'value'),
+     State('fil-cond-dropdown-scatter', 'value'),
+     State('input-val-scatter', 'value')]
+)
+def show_scatter(clickData, n_clicks_apply_scatter, cell_id, x_axis_val, cond_type, input_val):
+    if clickData is not None and not n_clicks_apply_scatter:
+        # Click on heatmap
+        cell_id = clickData['points'][0]['y']
+        filtered_table = pc.filter(global_copy_number, parquetFilter("=", global_copy_number, "cell_id", cell_id))
+    elif "apply-button-scatter" == ctx.triggered_id and cell_id is not None:
+        # Click on apply button
+        if x_axis_val is None:
+            filtered_table = pc.filter(global_copy_number, parquetFilter("=", global_copy_number, "cell_id", cell_id))
+        else:
+            conditionFilter = parquetFilter(cond_type, global_copy_number, x_axis_val, input_val)
+            cellFilter = parquetFilter("=", global_copy_number, "cell_id", cell_id)
+            condition = pc.and_(cellFilter, conditionFilter)
+            filtered_table = pc.filter(global_copy_number, condition)
+    else:
+        return go.Figure(), n_clicks_apply_scatter
+    
+    filtered_table = filtered_table.sort_by([("cell_id", "descending")])
+    scatter_df = filtered_table.to_pandas()
+    scatter_df['x_mapping'] = [start + cumulative_sizes[chromosomes_names.index(chrom)] for start, chrom in zip(scatter_df['start'], scatter_df['chrom'])]
+
+    scatter_fig = go.Figure(data=go.Scattergl(
+        x=scatter_df['x_mapping'],
+        y=scatter_df['modal_corrected']*scatter_df['assignment'],
+        mode='markers',
+        marker=dict(
+            size=5,
+            color=scatter_df['copy_number'],
+            colorscale=colorscale,
+            cmin=0,
+            cmax=14,
+            showscale=True,
+            colorbar={"title": "Copy Number"}, 
+        ),
+        text=chromosomes_names,
+        hovertemplate='Position: %{x} <br>Scaled Sequencing Coverage: %{y}',
+        showlegend=False 
+    ))
+
+    scatter_fig.update_layout(
+        title='Scatter Plot - ' + cell_id,
+        xaxis=dict(
+            title='Chromosome',
+            tickvals=cumulative_sizes,
+            ticktext=chromosomes_names + [''],
+            tickmode='array',
+            ticklabelmode='period',
+            ticklabelposition='outside',
+            tickformat='d',
+            range=[0, cumulative_sizes[-1] + chromosome_sizes[-1]], 
+        ),
+    )
+    scatter_fig.update_yaxes(title_text="Scaled sequencing coverage")
+    n_clicks_apply_scatter = 0
+    return scatter_fig, n_clicks_apply_scatter
+
 @app.callback(
     Output('value-dropdown', 'options'),
     Input('column-dropdown', 'value'),
@@ -273,6 +451,9 @@ def update_dropdown(contents, filename):
     prevent_initial_call=True
 )
 def update_value_dropdown(selected_column, jsonified_df):
+    global global_copy_number
+    df = global_copy_number.to_pandas()
+
     if selected_column is None:
         raise dash.exceptions.PreventUpdate
     
@@ -280,7 +461,7 @@ def update_value_dropdown(selected_column, jsonified_df):
         return [{'label': str(val), 'value': val} for val in df[selected_column].unique()]
 
     # Read the DataFrame from the intermediate data
-    df_meta = pd.read_json(jsonified_df, orient='split')
+    df_meta = pd.read_json(StringIO(jsonified_df), orient='split')
 
     if selected_column in df_meta.columns:
         # Get unique values for the selected column
@@ -293,9 +474,8 @@ def update_value_dropdown(selected_column, jsonified_df):
 
     return value_options
 
-
 @app.callback(
-    [Output('heatmap', 'figure'),
+    [Output('heatmap', 'figure', allow_duplicate=True),
      Output('apply-button', 'n_clicks'),
      Output('reset-button', 'n_clicks')],
     [Input('apply-button', 'n_clicks'),
@@ -306,19 +486,20 @@ def update_value_dropdown(selected_column, jsonified_df):
     State('value-dropdown', 'value'),
     State('intermediate-data', 'children'), 
     State('column-dropdown-sort', 'value'),
-    State('sort-cond-dropdown-metadata', 'value')]
+    State('sort-cond-dropdown-metadata', 'value'),
+    State('x-options', 'data')], 
+    prevent_initial_call=True, 
 )
-def update_heatmap(n_clicks_apply, n_clicks_reset, uploaded_metadata, x_axis_val, cond_type, input_val, intermediate_data, column_sort_value, sort_cond_value):
-
+def update_heatmap(n_clicks_apply, n_clicks_reset, uploaded_metadata, x_axis_val, cond_type, input_val, intermediate_data, column_sort_value, sort_cond_value, x_options):
     curr_heatmap_fig = go.Figure()
 
     if 'apply-button' == ctx.triggered_id:
+        df = global_copy_number.to_pandas()
         # # Map the dropdown value to the corresponding conditional operator
         # # Get the selected conditional operator from the dropdown value
         # conditional_operator = conditional_operators[cond_type]
-
-        if intermediate_data is None or x_axis_val in x_options:
-            filtered_table = pc.filter(table, parquetFilter(cond_type, table, x_axis_val, input_val))
+        if intermediate_data is None or x_axis_val in df.columns:
+            filtered_table = pc.filter(global_copy_number, parquetFilter(cond_type, global_copy_number, x_axis_val, input_val))
             df = filtered_table.to_pandas()
         else:
             content_type, content_string = uploaded_metadata.split(',')
@@ -350,144 +531,48 @@ def update_heatmap(n_clicks_apply, n_clicks_reset, uploaded_metadata, x_axis_val
             metadata_df_sel_cell_ids = filtered_data['cell_id'].unique()
             metadata_df_sel_cell_ids = metadata_df_sel_cell_ids.tolist()
             
-            df = table.to_pandas()
             df = df[df['cell_id'].isin(metadata_df_sel_cell_ids)]
             df['cell_id'] = df['cell_id'].astype(pd.CategoricalDtype(categories=cellIDorder, ordered=True))
             df = df.sort_values(by='cell_id')
 
-        df['x_mapping'] = [start + cumulative_sizes[chromosomes_names.index(chrom)] for start, chrom in zip(df['start'], df['chrom'])]
-        
-        dd_heatmap_fig = go.Figure(data=go.Heatmap(
-            z=df['copy_number'],
-            x=df['x_mapping'],
-            y=df['cell_id'],
-            colorscale=colorscale,
-            zmin=0,  # Set the minimum value for the colorbar scale
-            zmax=14,  # Set the maximum value for the colorbar scale
-            colorbar=dict(title="Copy Number"),
-        ))
-        dd_heatmap_fig.update_yaxes(title_text="Cell ID")
-        dd_heatmap_fig.update_layout(
-            title='Heatmap',
-            xaxis=dict(
-                title='Chromosome',
-                tickvals=cumulative_sizes,
-                ticktext=chromosomes_names + [''],
-                tickmode='array',
-                ticklabelmode='period',
-                ticklabelposition='outside',
-                tickformat='d',
-                range=[0, cumulative_sizes[-1] + chromosome_sizes[-1]], 
-            )
-        )
-        
-        curr_heatmap_fig = dd_heatmap_fig
+        curr_heatmap_fig = generateHeatmap(df, cumulative_sizes, chromosomes_names)        
         n_clicks_apply = 0
-
     elif "reset-button" == ctx.triggered_id:
-        curr_heatmap_fig = heatmap_fig
+        curr_heatmap_fig = global_heatmap
         n_clicks_reset = 0
     else:
-        curr_heatmap_fig = heatmap_fig
+        curr_heatmap_fig = go.Figure()
     return curr_heatmap_fig, n_clicks_apply, n_clicks_reset
 
-@app.callback(
-    Output('info-block', 'children'),
-    [Input('heatmap', 'clickData')]
-)
-def update_info_block(clickData):
-    if clickData is not None:
-        point_data = clickData['points'][0]
-        chromosome = get_chrom_from_x_val(point_data['x'], chromosomes_names, cumulative_sizes)
-        cell_id = point_data['y']
-        copy_number = point_data['z']
+@app.callback([Output('gpfit-data', 'data'),
+              Output('gpFit-error', 'children'), 
+              Output('gp-fit-inputs', 'style')],
+              [Input('gp-fit-upload', 'contents'),
+               Input('gp-fit-upload', 'filename')])
+def upload_gpFit(contents, filename):
+    global global_gpFit
+    if contents is not None:
+        # Parse uploaded data
+        content_type, content_string = contents.split(',')
+        decoded = base64.b64decode(content_string)
+        
+        # Read Parquet file
+        try:
+            parquet_file = io.BytesIO(decoded)
+            global_gpFit = pq.read_table(parquet_file)
+        except ArrowInvalid as e:
+            errorMessage = filename + " is not parquet file"
+            return {'value': False}, errorMessage, {'display': 'block'}
+        
+        required_cols = ['cell_id','state', 'training_cell_id', 'ref_condition', 'total_coverage', '2_coverage', 'num_bins']
+        for col in required_cols:
+            if col not in global_gpFit.schema.names:
+                errorMessage = col + " column is not in datatable"
+                return {'value': False}, errorMessage, {'display': 'block'}
+        
+        return {'value': True}, '', {'display': 'none'}
+    return {'value': False}, '', {'display': 'block'}
 
-        # Construct the text content for the info block
-        text_content = f'''
-            **Chromosome:** {chromosome} \t
-            **Cell ID:** {cell_id} \t
-            **Copy Number:** {copy_number}
-        '''
-        return dcc.Markdown(text_content)
-    else:
-        text_content = f'''
-            **Chromosome:**  \t
-            **Cell ID:**  \t
-            **Copy Number:** 
-        '''
-        return text_content
-
-def get_chrom_from_x_val(val, chrName, chrCumulativeSize):
-    for i in range(len(chrCumulativeSize)):
-        if val < chrCumulativeSize[i]:
-            return chrName[i-1]
-    raise ValueError
-
-# Define the callback to show the scatter plot on hover
-@app.callback(
-    [Output('scatter', 'figure'),
-    Output('apply-button-scatter', 'n_clicks')],
-    [Input('heatmap', 'clickData'),
-    Input('apply-button-scatter', 'n_clicks')],
-    [State('cell-id-dropdown', 'value'),
-     State('x-axis-dropdown-scatter', 'value'),
-     State('fil-cond-dropdown-scatter', 'value'),
-     State('input-val-scatter', 'value')]
-)
-def show_scatter(clickData, n_clicks_apply_scatter, cell_id, x_axis_val, cond_type, input_val):
-    if clickData is not None and not n_clicks_apply_scatter:
-        # Click on heatmap
-        cell_id = clickData['points'][0]['y']
-        filtered_table = pc.filter(table, parquetFilter("=", table, "cell_id", cell_id))
-    elif "apply-button-scatter" == ctx.triggered_id and cell_id is not None:
-        # Click on apply button
-        if x_axis_val is None:
-            filtered_table = pc.filter(table, parquetFilter("=", table, "cell_id", cell_id))
-        else:
-            condition = pc.and_(parquetFilter(cond_type, table, x_axis_val, input_val), parquetFilter("=", table, "cell_id", cell_id))
-            filtered_table = pc.filter(table, condition)
-    else:
-        return go.Figure(), n_clicks_apply_scatter
-    
-    filtered_table = filtered_table.sort_by([("cell_id", "descending")])
-    scatter_df = filtered_table.to_pandas()
-    scatter_df['x_mapping'] = [start + cumulative_sizes[chromosomes_names.index(chrom)] for start, chrom in zip(scatter_df['start'], scatter_df['chrom'])]
-
-    scatter_fig = go.Figure(data=go.Scattergl(
-        x=scatter_df['x_mapping'],
-        y=scatter_df['modal_corrected']*scatter_df['assignment'],
-        mode='markers',
-        marker=dict(
-            size=5,
-            color=scatter_df['copy_number'],
-            colorscale=colorscale,
-            cmin=0,
-            cmax=14,
-            showscale=True,
-            colorbar={"title": "Copy Number"}, 
-        ),
-        text=chromosomes_names,
-        hovertemplate='Position: %{x} <br>Scaled Sequencing Coverage: %{y}',
-        showlegend=False 
-    ))
-
-    scatter_fig.update_layout(
-        title='Scatter Plot',
-        xaxis=dict(
-            title='Chromosome',
-            tickvals=cumulative_sizes,
-            ticktext=chromosomes_names + [''],
-            tickmode='array',
-            ticklabelmode='period',
-            ticklabelposition='outside',
-            tickformat='d',
-            range=[0, cumulative_sizes[-1] + chromosome_sizes[-1]], 
-        ),
-    )
-    scatter_fig.update_yaxes(title_text="Scaled sequencing coverage")
-    n_clicks_apply_scatter = 0
-    return scatter_fig, n_clicks_apply_scatter
-    
 @app.callback(
     Output('multiplicity', 'figure'),
     [Input('heatmap', 'clickData'),
@@ -498,6 +583,10 @@ def show_scatter(clickData, n_clicks_apply_scatter, cell_id, x_axis_val, cond_ty
      State('input-val-scatter', 'value')]
 )
 def update_multiplicity(clickData, n_clicks_apply_scatter, cell_id, x_axis_val, cond_type, input_val):
+    if global_gpFit is None or global_copy_number is None:
+        return go.Figure()
+    gpfit_table = global_gpFit
+    
     selected_cell_id = None
     if "apply-button-scatter" == ctx.triggered_id and cell_id is not None:
         selected_cell_id = cell_id
@@ -509,7 +598,7 @@ def update_multiplicity(clickData, n_clicks_apply_scatter, cell_id, x_axis_val, 
     filtered_gpfittable = pc.filter(gpfit_table, parquetFilter("=", gpfit_table, "cell_id", selected_cell_id))
     multiplicity_df = filtered_gpfittable.to_pandas()
     
-    filtered_table = pc.filter(table, parquetFilter("=", table, "cell_id", selected_cell_id))
+    filtered_table = pc.filter(global_copy_number, parquetFilter("=", global_copy_number, "cell_id", selected_cell_id))
     df_coverage_order = filtered_table.to_pandas()
     df_coverage_order = df_coverage_order.groupby(['copy_number', 'assignment']).apply(get_coverage_order, include_groups=False).reset_index()    
     df_coverage_order.rename({0: 'order'}, axis=1, inplace=True)
@@ -579,14 +668,45 @@ def update_multiplicity(clickData, n_clicks_apply_scatter, cell_id, x_axis_val, 
         )
     return multiplicity_fig
 
+def get_coverage_order(df_group):
+    '''Get the order of magnitude of the coverage depth for the panel.'''
+    group_order = 1
 
-run = False
+    if len(df_group) > 0:
+        if df_group['2'].max() > 0:
+            group_order = int(np.log10(df_group['2'].max()))
+
+    return group_order 
+
+@app.callback(
+    Output('input-val-scatter', 'options'),
+    Input('x-axis-dropdown-scatter', 'value'),
+    State('intermediate-data', 'children'),
+    prevent_initial_call=True
+)
+def update_scatter_value_dropdown(selected_column, jsonified_df):
+    df = global_copy_number.to_pandas()
+
+    if selected_column is None:
+        raise dash.exceptions.PreventUpdate
+    
+    if jsonified_df is None:
+        return [{'label': str(val), 'value': val} for val in df[selected_column].unique()]
+
+    # Read the DataFrame from the intermediate data
+    df_meta = pd.read_json(StringIO(jsonified_df), orient='split')
+
+    if selected_column in df_meta.columns:
+        # Get unique values for the selected column
+        unique_values = df_meta[selected_column].unique() 
+    else:
+        unique_values = df[selected_column].unique()
+
+    # Update options for value-dropdown based on unique values
+    value_options = [{'label': str(val), 'value': val} for val in unique_values]
+
+    return value_options
+
 if __name__ == '__main__':
-    if not run:
-        run = True
-        # main()
-        # webbrowser.open_new_tab('http://127.0.0.1:8888/')
-        print('finished main')
-        app.run(debug=False, use_reloader=True)
-    
-    
+    print('done')
+    app.run_server(debug=True)
