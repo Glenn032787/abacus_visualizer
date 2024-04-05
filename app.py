@@ -709,4 +709,4 @@ def update_scatter_value_dropdown(selected_column, jsonified_df):
 
 if __name__ == '__main__':
     print('done')
-    app.run_server(debug=True)
+    app.run_server(debug=True, host='0.0.0.0', port=9000)
